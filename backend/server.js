@@ -1,152 +1,171 @@
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql2");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { Pool } = require("pg");
+require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MySQL Connection
-const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "Tanvi@0904",
-  database: "sharewarmth"
+// -------------------------------------------------------
+// POSTGRES / SUPABASE CONNECTION
+// -------------------------------------------------------
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-db.connect(err => {
-  if (err) throw err;
-  console.log("MySQL Connected...");
-});
+db.connect()
+  .then(() => console.log("Connected to Supabase PostgreSQL"))
+  .catch(err => console.error("DB Connection Error:", err));
 
-
-// ---------------------------------------------------
+// -------------------------------------------------------
 // USER SIGNUP
-// ---------------------------------------------------
+// -------------------------------------------------------
 app.post("/signup", async (req, res) => {
-  const { name, email, password, role } = req.body;
+  try {
+    const { name, email, password, role } = req.body;
 
-  const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-  const sql = "INSERT INTO user (name, email, password, role) VALUES (?, ?, ?, ?)";
-  db.query(sql, [name, email, hashedPassword, role], (err) => {
-    if (err) return res.status(400).json({ message: "User already exists" });
+    const sql = `
+      INSERT INTO users (name, email, password, role)
+      VALUES ($1, $2, $3, $4)
+    `;
+
+    await db.query(sql, [name, email, hashedPassword, role]);
+
     res.json({ message: "User registered successfully" });
-  });
+
+  } catch (err) {
+    console.log("SIGNUP ERROR:", err);
+    res.status(400).json({ message: "User already exists" });
+  }
 });
 
+// -------------------------------------------------------
 // USER LOGIN
-app.post("/login", (req, res) => {
-  const { email, password } = req.body;
+// -------------------------------------------------------
+app.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-  const sql = "SELECT * FROM user WHERE email = ?";
-  db.query(sql, [email], async (err, results) => {
-    if (err || results.length === 0) {
+    const sql = "SELECT * FROM users WHERE email = $1";
+    const result = await db.query(sql, [email]);
+
+    if (result.rows.length === 0)
       return res.status(400).json({ message: "Invalid email" });
-    }
 
-    const user = results[0];
+    const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password);
 
-    if (!isMatch) return res.status(400).json({ message: "Wrong password" });
+    if (!isMatch)
+      return res.status(400).json({ message: "Wrong password" });
 
     const token = jwt.sign({ id: user.id, role: user.role }, "SECRET_KEY", {
       expiresIn: "1d",
     });
 
     res.json({ message: "Login successful", token, role: user.role });
-  });
-});
 
-
-// ---------------------------------------------------
-// ADD DONATION
-// ---------------------------------------------------
-app.post("/add-donation", (req, res) => {
-  const { title, category, description, location, contactInfo } = req.body;
-
-  const sql =
-    "INSERT INTO donations (title, category, description, location, contactInfo) VALUES (?, ?, ?, ?, ?)";
-
-  db.query(sql, [title, category, description, location, contactInfo], (err) => {
-    if (err) {
-      console.log("DATABASE ERROR:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
-    res.json({ message: "Donation added successfully" });
-  });
-});
-
-
-// ---------------------------------------------------
-// GET DONATIONS FILTERED BY AREA
-// ---------------------------------------------------
-app.get("/rider/donations", (req, res) => {
-  const riderArea = req.query.area; // ex: Delhi
-
-  if (!riderArea) {
-    return res.status(400).json({ message: "Area is required" });
+  } catch (err) {
+    console.log("LOGIN ERROR:", err);
+    res.status(500).json({ message: "Server error" });
   }
-
-  const sql = `
-    SELECT * FROM donations
-    WHERE LOWER(location) LIKE LOWER(?)
-    ORDER BY created_at DESC
-  `;
-
-  db.query(sql, [`%${riderArea}%`], (err, results) => {
-    if (err) {
-      console.log("FILTER DONATIONS ERROR:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
-    res.json(results);
-  });
 });
 
+// -------------------------------------------------------
+// ADD DONATION
+// -------------------------------------------------------
+app.post("/add-donation", async (req, res) => {
+  try {
+    const { title, category, description, location, contactInfo } = req.body;
 
-// ---------------------------------------------------
-// RIDER SIGNUP (with password)
-// ---------------------------------------------------
+    const sql = `
+      INSERT INTO donations (title, category, description, location, contactInfo)
+      VALUES ($1, $2, $3, $4, $5)
+    `;
+
+    await db.query(sql, [title, category, description, location, contactInfo]);
+
+    res.json({ message: "Donation added successfully" });
+
+  } catch (err) {
+    console.log("ADD DONATION ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+// -------------------------------------------------------
+// GET DONATIONS BY AREA
+// -------------------------------------------------------
+app.get("/rider/donations", async (req, res) => {
+  try {
+    const riderArea = req.query.area;
+
+    if (!riderArea)
+      return res.status(400).json({ message: "Area is required" });
+
+    const sql = `
+      SELECT * FROM donations
+      WHERE LOWER(location) LIKE LOWER($1)
+      ORDER BY created_at DESC
+    `;
+
+    const result = await db.query(sql, [`%${riderArea}%`]);
+
+    res.json(result.rows);
+
+  } catch (err) {
+    console.log("FETCH DONATIONS ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+// -------------------------------------------------------
+// RIDER SIGNUP
+// -------------------------------------------------------
 app.post("/rider/signup", async (req, res) => {
-  const { name, phone, password, vehicle, area, notes } = req.body;
+  try {
+    const { name, phone, password, vehicle, area, notes } = req.body;
 
-  const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-  const sql = `
-    INSERT INTO riders (name, phone, password, vehicle, area, notes)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `;
+    const sql = `
+      INSERT INTO riders (name, phone, password, vehicle, area, notes)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `;
 
-  db.query(sql, [name, phone, hashedPassword, vehicle, area, notes], (err) => {
-    if (err) {
-      console.log("RIDER SIGNUP ERROR:", err);
-      return res.status(400).json({ message: "Phone already registered" });
-    }
+    await db.query(sql, [name, phone, hashedPassword, vehicle, area, notes]);
+
     res.json({ message: "Rider registered successfully!" });
-  });
+
+  } catch (err) {
+    console.log("RIDER SIGNUP ERROR:", err);
+    res.status(400).json({ message: "Phone already registered" });
+  }
 });
 
-
-// ---------------------------------------------------
+// -------------------------------------------------------
 // RIDER LOGIN
-// ---------------------------------------------------
-app.post("/rider/login", (req, res) => {
-  const { phone, password } = req.body;
+// -------------------------------------------------------
+app.post("/rider/login", async (req, res) => {
+  try {
+    const { phone, password } = req.body;
 
-  const sql = "SELECT * FROM riders WHERE phone = ?";
-  db.query(sql, [phone], async (err, results) => {
-    if (err || results.length === 0) {
+    const sql = "SELECT * FROM riders WHERE phone = $1";
+    const result = await db.query(sql, [phone]);
+
+    if (result.rows.length === 0)
       return res.status(400).json({ message: "Phone not registered" });
-    }
 
-    const rider = results[0];
+    const rider = result.rows[0];
     const isMatch = await bcrypt.compare(password, rider.password);
 
-    if (!isMatch) {
+    if (!isMatch)
       return res.status(400).json({ message: "Wrong password" });
-    }
 
     const token = jwt.sign(
       { id: rider.id, area: rider.area },
@@ -164,31 +183,34 @@ app.post("/rider/login", (req, res) => {
         phone: rider.phone,
       },
     });
-  });
+
+  } catch (err) {
+    console.log("RIDER LOGIN ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 });
 
-
-// ---------------------------------------------------
+// -------------------------------------------------------
 // ACCEPT DONATION
-// ---------------------------------------------------
-app.post("/accept-donation", (req, res) => {
-  const { donationId, riderName, riderContact } = req.body;
+// -------------------------------------------------------
+app.post("/accept-donation", async (req, res) => {
+  try {
+    const { donationId, riderName, riderContact } = req.body;
 
-  const sql = `
-    INSERT INTO accepted_donations (donation_id, rider_name, rider_contact, status)
-    VALUES (?, ?, ?, 'accepted')
-  `;
+    const sql = `
+      INSERT INTO accepted_donations (donation_id, rider_name, rider_contact, status)
+      VALUES ($1, $2, $3, 'accepted')
+    `;
 
-  db.query(sql, [donationId, riderName, riderContact], (err) => {
-    if (err) {
-      console.log("ACCEPT DONATION ERROR:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
+    await db.query(sql, [donationId, riderName, riderContact]);
+
     res.json({ message: "Donation accepted!" });
-  });
+
+  } catch (err) {
+    console.log("ACCEPT DONATION ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 });
 
-
-// ---------------------------------------------------
+// -------------------------------------------------------
 app.listen(5000, () => console.log("Server running on port 5000"));
-
