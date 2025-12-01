@@ -186,9 +186,10 @@ app.post("/rider/login", async (req, res) => {
 
   } catch (err) {
     console.log("RIDER LOGIN ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+    res.status(500).json({ message: "Database errorr" });
   }
 });
+
 
 // -------------------------------------------------------
 // ACCEPT DONATION
